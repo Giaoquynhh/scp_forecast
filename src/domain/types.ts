@@ -50,6 +50,21 @@ export interface WriteOptions {
   source: string;
   changedBy: string;
   reason?: string;
+  /**
+   * true = chỉ sửa dòng đã có, KHÔNG thêm dòng mới.
+   *
+   * Dùng khi điền bù một cột vào dữ liệu cũ (`--only ma3`): cặp có bán mà DB
+   * chưa có dòng thì để yên, vì thêm dòng mới ở tháng đã chốt sổ là mở rộng
+   * phạm vi dữ liệu chứ không còn là điền bù.
+   */
+  updateOnly?: boolean;
+  /**
+   * true = giữ nguyên `source` cũ của dòng.
+   *
+   * Điền bù MA3 vào một dòng mà FC do engine khác ghi thì không được đổi nhãn
+   * `source` của dòng đó — nhãn phải nói ai ghi FC, không phải ai chạm vào sau.
+   */
+  keepSource?: boolean;
 }
 
 export interface WriteResult {
@@ -57,6 +72,8 @@ export interface WriteResult {
   updated: number;
   /** dòng đã đúng giá trị → không đụng tới, không ghi lịch sử */
   skipped: number;
+  /** `updateOnly` mà DB chưa có dòng → bỏ qua, không thêm mới */
+  notFound: number;
 }
 
 /**

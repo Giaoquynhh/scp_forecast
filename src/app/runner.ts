@@ -3,8 +3,19 @@ import {
   addMonths, daysInMonth, missingDaysInBlock, toDateOnly, type Block,
 } from '../domain/period.js';
 import { describeConnection } from '../infra/db.js';
-import type { ActualLine, ForecastLine, ForecastRecord } from '../domain/types.js';
+import type {
+  ActualLine, ForecastLine, ForecastRecord, WriteResult,
+} from '../domain/types.js';
 import type { ForecastService } from './forecast.service.js';
+
+/**
+ * 'both' — TT + FC + MA3 (lượt bình thường)
+ * 'fc'   — chỉ FC + MA3
+ * 'tt'   — chỉ TT
+ * 'ma3'  — CHỈ điền MA3 vào dòng đã có; không đụng fc_qty, không thêm dòng mới.
+ *          Dành cho tháng cũ, nơi FC của engine trước phải giữ nguyên.
+ */
+export type RunMode = 'fc' | 'tt' | 'both' | 'ma3';
 
 export interface RunOptions {
   /** Ngày đầu tháng đích của FC + MA3. */
@@ -17,7 +28,7 @@ export interface RunOptions {
    * ra dòng nào (chưa có ngày bán nào) và đưa mọi dòng TT sẵn có về 0.
    */
   ttTarget?: Date;
-  only: 'fc' | 'tt' | 'both';
+  only: RunMode;
   dryRun: boolean;
   ttMonths: number;
   limit?: number;
@@ -67,14 +78,19 @@ export class Runner {
       summary.fcCleared = clearedForecast.length;
       summary.fcTotal = sum(forecast, (l) => l.fcQty);
       summary.ma3Total = sum(forecast, (l) => l.ma3);
+      if (opts.only !== 'ma3') {
+        console.log(
+          `FC   ${fmt.format(summary.fcPairs)} cặp CN×SKU · tổng ${m2(summary.fcTotal)}` +
+          (clearedForecast.length ? ` · ${fmt.format(clearedForecast.length)} dòng đưa về 0` : ''),
+        );
+      }
       console.log(
-        `FC   ${fmt.format(summary.fcPairs)} cặp CN×SKU · tổng ${m2(summary.fcTotal)}` +
-        (clearedForecast.length ? ` · ${fmt.format(clearedForecast.length)} dòng đưa về 0` : ''),
+        `MA3  ${fmt.format(summary.fcPairs)} cặp CN×SKU · tổng ${m2(summary.ma3Total)}` +
+        (opts.only === 'ma3' ? '  (chỉ MA3 — fc_qty giữ nguyên)' : ''),
       );
-      console.log(`MA3  trung bình trượt 3 tháng · tổng ${m2(summary.ma3Total)}`);
     }
 
-    if (opts.only !== 'fc') {
+    if (opts.only !== 'fc' && opts.only !== 'ma3') {
       const ttTo = toDateOnly(opts.ttTarget ?? opts.target);
       const from = toDateOnly(addMonths(opts.ttTarget ?? opts.target, -(opts.ttMonths - 1)));
       const res = await this.service.calculateActuals(from, ttTo);
@@ -97,7 +113,8 @@ export class Runner {
     }
 
     if (opts.dryRun) {
-      console.log(`Dry-run: bỏ qua ${fmt.format(forecast.length)} dòng FC và ${fmt.format(actuals.length)} dòng TT.`);
+      const what = opts.only === 'ma3' ? 'dòng MA3' : 'dòng FC';
+      console.log(`Dry-run: bỏ qua ${fmt.format(forecast.length)} ${what} và ${fmt.format(actuals.length)} dòng TT.`);
       return summary;
     }
 
@@ -108,9 +125,11 @@ export class Runner {
       console.log(`Ghi TT   ${describe(r)}`);
     }
     if (forecast.length > 0 || clearedForecast.length > 0) {
-      const r = await this.service.writeForecast(forecast, periodStart, clearedForecast);
+      const r = opts.only === 'ma3'
+        ? await this.service.writeMa3(forecast, periodStart, clearedForecast)
+        : await this.service.writeForecast(forecast, periodStart, clearedForecast);
       this.accumulate(summary, r);
-      console.log(`Ghi FC   ${describe(r)}`);
+      console.log(`Ghi ${opts.only === 'ma3' ? 'MA3 ' : 'FC  '} ${describe(r)}`);
     }
 
     return summary;
@@ -196,6 +215,8 @@ function m2(n: number): string {
   return `${fmt.format(Math.round(n))} m²`;
 }
 
-function describe(r: { inserted: number; updated: number; skipped: number }): string {
-  return `thêm ${fmt.format(r.inserted)} · sửa ${fmt.format(r.updated)} · giữ nguyên ${fmt.format(r.skipped)}`;
+function describe(r: WriteResult): string {
+  return `thêm ${fmt.format(r.inserted)} · sửa ${fmt.format(r.updated)}` +
+    ` · giữ nguyên ${fmt.format(r.skipped)}` +
+    (r.notFound > 0 ? ` · ${fmt.format(r.notFound)} cặp chưa có dòng, bỏ qua` : '');
 }

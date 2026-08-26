@@ -35,7 +35,7 @@ class FakeWriter implements ForecastWriter {
   async write(records: ForecastRecord[], opts: WriteOptions): Promise<WriteResult> {
     this.written.push(...records);
     this.lastOpts = opts;
-    return { inserted: records.length, updated: 0, skipped: 0 };
+    return { inserted: records.length, updated: 0, skipped: 0, notFound: 0 };
   }
   async pairsWithActuals(): Promise<ActualLine[]> { return this.existing; }
   async pairsWithForecast() { return this.withForecast; }
@@ -150,5 +150,51 @@ describe('ForecastService.writeForecast', () => {
       { cnCode: '073', skuCode: 'SKU-A', periodStart: '2026-09-01', fcQty: 30, ma3: 1 },
     ]);
     assert.equal(writer.lastOpts?.source, 'FORECAST_ENGINE');
+  });
+});
+
+describe('ForecastService.writeMa3', () => {
+  const line = {
+    cnCode: '073', skuCode: 'SKU-A', periodStart: '2026-03-01',
+    blocks: { b1: 1, b2: 1, b3: 1 }, weighted: 1, perDay: 1, fcQty: 30, ma3: 1,
+  };
+
+  it('CHỈ gửi ma3 — không gửi fcQty, để COALESCE giữ nguyên FC của engine cũ', async () => {
+    const writer = new FakeWriter();
+    await build(new FakeSales([]), writer).writeMa3([line], '2026-03-01');
+
+    assert.deepEqual(writer.written, [
+      { cnCode: '073', skuCode: 'SKU-A', periodStart: '2026-03-01', ma3: 1 },
+    ]);
+    // Không có khóa fcQty, khác hẳn với "fcQty: undefined" — repository đọc
+    // `r.fcQty ?? null` nên cả hai ra NULL, nhưng vắng mặt hẳn thì rõ ý hơn.
+    assert.equal('fcQty' in writer.written[0], false);
+  });
+
+  it('bật updateOnly và keepSource', async () => {
+    const writer = new FakeWriter();
+    await build(new FakeSales([]), writer).writeMa3([line], '2026-03-01');
+
+    assert.equal(writer.lastOpts?.updateOnly, true);
+    assert.equal(writer.lastOpts?.keepSource, true);
+  });
+
+  it('reason nói rõ là điền bù, để phân biệt với lượt FC+MA3 trong lịch sử', async () => {
+    const writer = new FakeWriter();
+    await build(new FakeSales([]), writer).writeMa3([line], '2026-03-01');
+
+    assert.match(writer.lastOpts?.reason ?? '', /MA3 điền bù/);
+  });
+
+  it('dòng cleared cũng chỉ đưa ma3 về 0, không đụng fc', async () => {
+    const writer = new FakeWriter();
+    await build(new FakeSales([]), writer).writeMa3([], '2026-03-01', [
+      { cnCode: '073', skuCode: 'SKU-B', periodStart: '2026-03-01', fcQty: 0, ma3: 0 },
+    ]);
+
+    assert.deepEqual(writer.written, [
+      { cnCode: '073', skuCode: 'SKU-B', periodStart: '2026-03-01', ma3: 0 },
+    ]);
+    assert.equal('fcQty' in writer.written[0], false);
   });
 });

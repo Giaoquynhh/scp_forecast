@@ -1,9 +1,10 @@
 import { CFG } from '../config.js';
 import { describeFcDaySpec } from '../domain/period.js';
+import type { RunMode } from './runner.js';
 
 export interface CliArgs {
   month?: string;
-  only: 'fc' | 'tt' | 'both';
+  only: RunMode;
   dryRun: boolean;
   daemon: boolean;
   migrate: boolean;
@@ -49,8 +50,8 @@ export function parseArgs(argv: string[]): CliArgs {
     else throw new Error(`Tham số lạ: ${token}`);
   }
 
-  if (!['fc', 'tt', 'both'].includes(args.only)) {
-    throw new Error(`--only phải là fc | tt | both (nhận được: ${args.only})`);
+  if (!['fc', 'tt', 'both', 'ma3'].includes(args.only)) {
+    throw new Error(`--only phải là fc | tt | both | ma3 (nhận được: ${args.only})`);
   }
   if (!Number.isInteger(args.ttMonths) || args.ttMonths < 1) {
     throw new Error('--tt-months phải là số nguyên >= 1');
@@ -78,6 +79,9 @@ scp-forecast — tính TT, FC và MA3 rồi ghi vào branch_forecast
   npm start -- --month 2026-09    chạy cho tháng chỉ định (cả FC lẫn TT)
   npm start -- --only fc          chỉ tính FC + MA3
   npm start -- --only tt          chỉ tính TT
+  npm start -- --month 2026-03 --only ma3
+                                  điền bù MA3 vào tháng cũ — chỉ sửa dòng đã có,
+                                  KHÔNG đụng fc_qty, KHÔNG thêm dòng mới
   npm start -- --dry-run          tính và in kết quả, KHÔNG ghi DB
   npm start -- --tt-months 2      số tháng gần nhất được tính lại TT
   npm start -- --limit 20         chỉ ghi N dòng đầu (để thử)

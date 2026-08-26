@@ -30,15 +30,23 @@ export class BranchForecastRepository implements ForecastWriter {
   ) {}
 
   async write(records: ForecastRecord[], opts: WriteOptions): Promise<WriteResult> {
-    const result: WriteResult = { inserted: 0, updated: 0, skipped: 0 };
+    const result: WriteResult = { inserted: 0, updated: 0, skipped: 0, notFound: 0 };
     if (records.length === 0) return result;
 
     for (let i = 0; i < records.length; i += this.chunkSize) {
-      const chunk = records.slice(i, i + this.chunkSize);
+      const wholeChunk = records.slice(i, i + this.chunkSize);
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
-        const stored = await this.loadExisting(client, chunk);
+        const stored = await this.loadExisting(client, wholeChunk);
+
+        // updateOnly: cặp chưa có dòng thì bỏ ra khỏi lô trước khi so sánh, để
+        // ON CONFLICT không có cơ hội INSERT.
+        const chunk = opts.updateOnly
+          ? wholeChunk.filter((r) => stored.has(keyOf(r)))
+          : wholeChunk;
+        result.notFound += wholeChunk.length - chunk.length;
+
         const todo = chunk.filter((r) => this.hasChange(r, stored.get(keyOf(r))));
         result.skipped += chunk.length - todo.length;
 
@@ -172,7 +180,7 @@ export class BranchForecastRepository implements ForecastWriter {
          fc_qty          = COALESCE(EXCLUDED.fc_qty,     branch_forecast.fc_qty),
          actual_qty      = COALESCE(EXCLUDED.actual_qty, branch_forecast.actual_qty),
          ma3             = COALESCE(EXCLUDED.ma3,        branch_forecast.ma3),
-         source          = EXCLUDED.source,
+         source          = ${opts.keepSource ? 'branch_forecast.source' : 'EXCLUDED.source'},
          last_updated_by = EXCLUDED.last_updated_by,
          last_updated_at = NOW(),
          version         = branch_forecast.version + 1
