@@ -1,4 +1,5 @@
 import { CFG } from '../config.js';
+import { describeFcDaySpec } from '../domain/period.js';
 
 export interface CliArgs {
   month?: string;
@@ -72,8 +73,9 @@ scp-forecast — tính TT, FC và MA3 rồi ghi vào branch_forecast
 
   npm run migrate                 thêm cột mà app cần (ma3) vào DB
   npm run cron                    chạy nền, cron ${CFG.cronSchedule} (${CFG.timezone})
-  npm start                       chạy một lượt cho tháng hiện tại
-  npm start -- --month 2026-09    chạy cho tháng chỉ định
+                                  FC: ${describeFcDaySpec(CFG.fcDay)} → tháng ${CFG.fcTarget === 'next' ? 'sau' : 'hiện tại'}
+  npm start                       một lượt: FC cho tháng ${CFG.fcTarget === 'next' ? 'SAU' : 'hiện tại'}, TT cho tháng hiện tại
+  npm start -- --month 2026-09    chạy cho tháng chỉ định (cả FC lẫn TT)
   npm start -- --only fc          chỉ tính FC + MA3
   npm start -- --only tt          chỉ tính TT
   npm start -- --dry-run          tính và in kết quả, KHÔNG ghi DB

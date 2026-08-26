@@ -1,14 +1,15 @@
-import { parseArgs } from './app/cli.js';
-
 /**
  * Điểm vào: chỉ định tuyến, không chứa logic.
  *
- * Các module chạm DB được import ĐỘNG bên trong main() — connection pool được
- * tạo ngay lúc import, nên lỗi cấu hình (DB_SSL sai, thiếu file CA, thiếu
- * DB_PASSWORD) nếu import tĩnh sẽ văng ra ngoài mọi try/catch và in stack trace
- * thô. Import động giữ chúng trong tầm bắt của catch bên dưới.
+ * MỌI import đều nằm trong main() chứ không ở đầu file. Lý do: `config.ts` kiểm
+ * tra biến môi trường ngay lúc nạp module (FC_DAY_OF_MONTH sai, thiếu DB_PASSWORD,
+ * DB_SSL=verify-full mà không có file CA), còn `db.ts` tạo connection pool ngay
+ * lúc nạp. Import tĩnh thì những lỗi đó văng ra TRƯỚC khi main() chạy, nằm ngoài
+ * mọi try/catch, và người dùng nhận một stack trace thô thay vì một dòng nói rõ
+ * biến nào sai. Import động giữ chúng trong tầm bắt của catch bên dưới.
  */
 async function main(): Promise<void> {
+  const { parseArgs } = await import('./app/cli.js');
   const args = parseArgs(process.argv.slice(2));
 
   if (args.migrate) {
@@ -38,11 +39,19 @@ async function main(): Promise<void> {
   }
 
   const { buildRunner } = await import('./app/container.js');
-  const { resolveTarget } = await import('./domain/period.js');
+  const { firstOfMonth, resolveTarget } = await import('./domain/period.js');
+  const { CFG } = await import('./config.js');
   const { pool } = await import('./infra/db.js');
 
+  const now = new Date();
   await buildRunner().run({
-    target: resolveTarget(args.month),
+    target: resolveTarget(args.month, CFG.fcTarget),
+    // `--month` là chỉ định tường minh: cả FC lẫn TT đều theo tháng đó, để lệnh
+    // backfill giữ nguyên nghĩa cũ. Chỉ khi KHÔNG truyền --month thì TT mới phải
+    // tách ra tháng hiện tại, vì lúc đó FC đã nhắm tháng sau.
+    ttTarget: args.month
+      ? resolveTarget(args.month)
+      : firstOfMonth(now.getFullYear(), now.getMonth()),
     only: args.only,
     dryRun: args.dryRun,
     ttMonths: args.ttMonths,

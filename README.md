@@ -38,11 +38,61 @@ npm run serve                   # HTTP đọc-thuần cho endpoint tổng (xem m
 | Ngày | Việc |
 |---|---|
 | Ngày thường | Tính lại **TT của tháng hiện tại** |
-| **Mùng 1** | Chốt sổ TT tháng trước lần cuối → tính lại TT tháng mới → sinh **FC** cho tháng mới |
+| **Ngày cuối tháng** | Tính lại TT → sinh **FC + MA3 cho tháng SAU** ← số người dùng xem |
+| **Mùng 1** | Chốt sổ TT tháng trước lần cuối → tính lại TT tháng mới → **tính lại FC của tháng vừa bắt đầu** ← số chốt |
+
+FC sinh **cuối tháng** vì đó là lúc người dùng xem để dự báo cho tháng sau. TT thì
+luôn là tháng hiện tại, không đi theo tháng đích của FC.
 
 Mỗi lượt là **tính lại tổng lũy kế** từ `sales_transaction_v2`, không phải cộng
 dồn — nên phần dữ liệu bán mới đổ về từ hôm trước tự động được tính vào. Ví dụ
 TT đang là tổng của ngày 1–15; 02:00 ngày 17 chạy lại thì ra tổng ngày 1–16.
+
+### Vì sao FC chạy hai lượt mỗi tháng
+
+Lượt cuối tháng lấy tháng **đang chạy** làm B1, mà tháng đó chưa đóng sổ: 02:00
+ngày 31/08 thì dữ liệu bán mới tới khoảng 30/08. B1 mang trọng số 0.6 nên FC hụt.
+Đo trên dữ liệu thật (tháng đích 8/2026, cắt bớt ngày cuối của B1 = tháng 7):
+
+| B1 thiếu | FC | lệch | MA3 | lệch |
+|---|---|---|---|---|
+| 0 ngày | 633.659 m² | — | 623.845 m² | — |
+| **1 ngày** | 611.653 m² | **−3,47%** | 612.013 m² | **−1,90%** |
+| 2 ngày | 596.182 m² | −5,91% | 603.696 m² | −3,23% |
+| 7 ngày | 541.525 m² | −14,54% | 574.310 m² | −7,94% |
+
+Thiếu 1/31 ngày mà FC lệch 3,47% chứ không phải 1,9% như phép tính theo trọng số
+(0.6 × 1/31) — vì **ngày cuối tháng bán nhiều hơn trung bình**. Nên mỗi lượt chạy
+đều in ra số ngày còn thiếu và mức hụt tối thiểu:
+
+```
+⚠ B1 · 2026-08 chưa đóng sổ: thiếu 1/31 ngày (dữ liệu bán mới nhất 2026-08-30), trọng số ×0.6
+⚠ FC hụt ít nhất 1.9% — thực tế thường gấp đôi vì ngày cuối tháng bán nhiều hơn trung bình.
+  Lượt mùng 1 sẽ tính lại khi các khối đã đủ ngày.
+```
+
+Vì vậy có **lượt chốt mùng 1**: tính lại đúng tháng đó khi B1 đã đủ ngày.
+
+```
+31/08 02:00 → FC tháng 9 (B1 = tháng 8 còn hở)   ← số xem trước
+01/09 02:00 → FC tháng 9 (B1 = tháng 8 đã đủ)    ← số chốt
+```
+
+FC là idempotent nên lượt chốt chỉ sửa những dòng thật sự đổi, và `version` chỉ
+tăng ở đó. App **không tự bù** phần ngày thiếu — bù là đổi công thức, phải hỏi
+nghiệp vụ trước.
+
+### Đổi lại lịch
+
+| Muốn | Đặt trong `.env` |
+|---|---|
+| Cuối tháng, cho tháng sau (mặc định) | `FC_DAY_OF_MONTH=last` + `FC_TARGET=next` |
+| Trước ngày cuối 2 ngày | `FC_DAY_OF_MONTH=last-2` |
+| Về cách cũ: mùng 1, cho tháng hiện tại | `FC_DAY_OF_MONTH=1` + `FC_TARGET=current` |
+| Bỏ lượt chốt mùng 1 | `FC_FINALIZE_ON_FIRST=false` |
+
+`last` tự khớp tháng 28/29/30/31 ngày. Ngày cố định lớn hơn số ngày của tháng được
+kẹp về ngày cuối, nên `FC_DAY_OF_MONTH=31` vẫn nổ vào tháng 2.
 
 Lượt trước chưa xong thì lượt sau **bỏ qua**, tránh hai tiến trình cùng ghi. Lỗi
 trong một lượt được ghi log và daemon vẫn sống, lượt sau thử lại.
@@ -64,15 +114,16 @@ Arguments:  start
 Start in:   D:\SCP\forecast
 ```
 
-Cách này không cần daemon, nhưng phải tự thêm điều kiện FC — hoặc để nguyên
-`npm start` (chạy cả TT lẫn FC mỗi ngày) và đặt `FC_RECOMPUTE_DAILY=true`.
+Cách này không cần daemon, nhưng mất luôn logic chọn ngày: `npm start` chạy cả TT
+lẫn FC mỗi lượt, và FC nhắm tháng sau (theo `FC_TARGET`). Muốn giống daemon thì
+tạo **hai** task: một task `start --only tt` chạy hằng ngày, một task `start` chạy
+ngày cuối tháng và mùng 1.
 
 ---
 
 ## Công thức FC
 
-App chạy vào **mùng 1 của tháng đích T**, lấy dữ liệu bán của **3 tháng dương
-lịch liền trước** — lúc đó cả 3 tháng đều đã đóng sổ nên không bị hụt ngày.
+Tháng đích T lấy dữ liệu bán của **3 tháng dương lịch liền trước**.
 
 ```
 T = tháng 3  →  B1 = tháng 2   (trọng số 0.6)
@@ -195,6 +246,9 @@ Ngoại lệ duy nhất: **mùng 1**, tháng liền trước được tính lạ
 sổ, rồi khóa luôn. Không có bước này thì tháng 2 vĩnh viễn thiếu ngày cuối — 02:00
 ngày 28 mới cộng tới ngày 27 — mà FC tháng 3 lại lấy tháng 2 làm B1. Tắt bằng
 `TT_CLOSEOUT_PREV_MONTH=false`.
+
+Bước chốt sổ này gắn với **mùng 1**, không gắn với ngày sinh FC — đổi
+`FC_DAY_OF_MONTH` không làm nó chạy sớm hay muộn theo.
 
 TT của tháng hiện tại chỉ cộng tới hôm nay (`doc_date <= CURRENT_DATE`). Dòng có
 TT cũ nhưng kỳ này không còn phát sinh bán sẽ được đưa về 0 thay vì để số cũ nằm lại.
@@ -382,7 +436,9 @@ npm run typecheck
 | `TT_MONTHS` | 1 | Số tháng gần nhất tính lại TT |
 | `TT_CLOSEOUT_PREV_MONTH` | true | Chốt sổ tháng trước vào mùng 1 |
 | `CRON_SCHEDULE` | `0 2 * * *` | Lịch chạy daemon |
-| `FC_DAY_OF_MONTH` | 1 | Ngày sinh FC |
+| `FC_DAY_OF_MONTH` | last | Ngày sinh FC: `1`..`31`, `last`, `last-N` |
+| `FC_TARGET` | next | Tháng đích: `next` (tháng sau) hoặc `current` |
+| `FC_FINALIZE_ON_FIRST` | true | Mùng 1 tính lại FC khi B1 đã đủ ngày |
 | `FC_RECOMPUTE_DAILY` | false | true = tính lại FC mỗi ngày |
 | `HTTP_PORT` | 3010 | Cổng của `npm run serve` |
 | `HTTP_HOST` | 127.0.0.1 | Địa chỉ nghe. Đổi = mở ra cả mạng, endpoint không có auth |

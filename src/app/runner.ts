@@ -1,12 +1,22 @@
 import { CFG } from '../config.js';
-import { addMonths, daysInMonth, toDateOnly } from '../domain/period.js';
+import {
+  addMonths, daysInMonth, missingDaysInBlock, toDateOnly, type Block,
+} from '../domain/period.js';
 import { describeConnection } from '../infra/db.js';
 import type { ActualLine, ForecastLine, ForecastRecord } from '../domain/types.js';
 import type { ForecastService } from './forecast.service.js';
 
 export interface RunOptions {
-  /** ngày đầu tháng đích */
+  /** Ngày đầu tháng đích của FC + MA3. */
   target: Date;
+  /**
+   * Tháng mới nhất được tính lại TT. Mặc định = `target`.
+   *
+   * Phải tách khỏi `target` từ khi FC chạy cuối tháng: cuối tháng 8 thì FC nhắm
+   * tháng 9, nhưng TT phải vẫn là tháng 8 — tính TT cho tháng 9 lúc đó sẽ không
+   * ra dòng nào (chưa có ngày bán nào) và đưa mọi dòng TT sẵn có về 0.
+   */
+  ttTarget?: Date;
   only: 'fc' | 'tt' | 'both';
   dryRun: boolean;
   ttMonths: number;
@@ -65,17 +75,18 @@ export class Runner {
     }
 
     if (opts.only !== 'fc') {
-      const from = toDateOnly(addMonths(opts.target, -(opts.ttMonths - 1)));
-      const res = await this.service.calculateActuals(from, periodStart);
+      const ttTo = toDateOnly(opts.ttTarget ?? opts.target);
+      const from = toDateOnly(addMonths(opts.ttTarget ?? opts.target, -(opts.ttMonths - 1)));
+      const res = await this.service.calculateActuals(from, ttTo);
       actuals = [...res.actuals, ...res.cleared];
       summary.ttRows = res.actuals.length;
       summary.ttTotal = sum(res.actuals, (l) => l.actualQty);
       console.log(
-        `TT   ${fmt.format(summary.ttRows)} dòng [${from} → ${periodStart}] · tổng ${m2(summary.ttTotal)}` +
+        `TT   ${fmt.format(summary.ttRows)} dòng [${from} → ${ttTo}] · tổng ${m2(summary.ttTotal)}` +
         (res.cleared.length ? ` · ${res.cleared.length} dòng đưa về 0` : ''),
       );
-      const latest = await this.service.latestSalesDate(periodStart);
-      console.log(`     dữ liệu bán của tháng đích có tới ngày ${latest ?? '—'}`);
+      const latest = await this.service.latestSalesDate(ttTo);
+      console.log(`     dữ liệu bán của tháng ${ttTo.slice(0, 7)} có tới ngày ${latest ?? '—'}`);
     }
 
     if (opts.limit !== undefined) {
@@ -111,19 +122,63 @@ export class Runner {
       `DB          ${CFG.db.user}@${CFG.db.host}:${CFG.db.port}/${CFG.db.database}` +
       `  ·  ${await describeConnection()}`,
     );
-    console.log(`Tháng đích  ${periodStart}  (${daysInMonth(opts.target)} ngày)`);
+    // Chỉ nói "tháng đích" khi lượt này thật sự tính FC — lượt chỉ-TT in tháng
+    // đích của FC ra sẽ làm người đọc log tưởng TT đang tính cho tháng đó.
+    if (opts.only === 'tt') {
+      console.log(`Tháng TT    ${toDateOnly(opts.ttTarget ?? opts.target).slice(0, 7)}`);
+    } else {
+      console.log(`Tháng đích  ${periodStart}  (${daysInMonth(opts.target)} ngày)`);
+    }
     if (opts.only !== 'tt') {
       console.log(`Kiểu khối   ${CFG.blockMode}`);
-      for (const b of this.service.blocksFor(opts.target)) {
+      const blocks = this.service.blocksFor(opts.target);
+      for (const b of blocks) {
         console.log(`  ${b.label.padEnd(26)} [${b.from} → ${b.to})  ${b.days} ngày  ×${b.weight}`);
       }
       console.log(
         `Công thức   FC = (Σ wᵢ·Bᵢ) / ${CFG.perDayDivisor} × ${daysInMonth(opts.target)}` +
         `   ·   MA3 = (B1+B2+B3) / 3`,
       );
+      await this.warnIfBlocksOpen(blocks);
     }
     if (opts.dryRun) console.log('CHẾ ĐỘ      dry-run — không ghi gì vào DB');
     console.log(line);
+  }
+
+  /**
+   * Khối chưa đóng sổ thì FC hụt, mà công thức không có gì báo ra. Chạy cuối
+   * tháng là trường hợp thường gặp nhất: B1 là tháng đang chạy, còn thiếu 1-2
+   * ngày cuối, và B1 mang trọng số nặng nhất.
+   *
+   * Chỉ cảnh báo, KHÔNG tự bù — bù là đổi công thức, phải hỏi nghiệp vụ trước.
+   */
+  private async warnIfBlocksOpen(blocks: Block[]): Promise<void> {
+    const latest = await this.service.latestSalesDate(blocks[blocks.length - 1].from);
+    let shortfall = 0;
+
+    for (const b of blocks) {
+      const missing = missingDaysInBlock(b, latest);
+      if (missing <= 0) continue;
+      const share = (b.weight * missing) / b.days;
+      shortfall += share;
+      console.warn(
+        `  ⚠ ${b.label} chưa đóng sổ: thiếu ${missing}/${b.days} ngày` +
+        ` (dữ liệu bán mới nhất ${latest ?? '—'}), trọng số ×${b.weight}`,
+      );
+    }
+
+    if (shortfall > 0) {
+      // Ước lượng theo trọng số là mức SÀN: nó giả định mỗi ngày bán như nhau,
+      // nhưng ngày cuối tháng bán nhiều hơn trung bình. Đo trên dữ liệu thật
+      // (tháng 7/2026, thiếu 1 ngày): tính ra 1,9% mà thực tế lệch 3,5%.
+      console.warn(
+        `  ⚠ FC hụt ít nhất ${(shortfall * 100).toFixed(1)}% — thực tế thường gấp đôi vì` +
+        ' ngày cuối tháng bán nhiều hơn trung bình.' +
+        (CFG.fcFinalizeOnFirst
+          ? ' Lượt mùng 1 sẽ tính lại khi các khối đã đủ ngày.'
+          : ' FC_FINALIZE_ON_FIRST đang tắt — số này sẽ nằm lại nguyên như vậy.'),
+      );
+    }
   }
 
   private accumulate(s: RunSummary, r: { inserted: number; updated: number; skipped: number }): void {

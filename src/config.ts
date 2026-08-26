@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import type { BlockMode } from './domain/period.js';
+import { parseFcDaySpec, type BlockMode, type FcTargetMode } from './domain/period.js';
 import type { Weights } from './domain/forecast-formula.js';
 
 /** Mức bảo mật kết nối tới Postgres. */
@@ -9,6 +9,12 @@ function req(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Thiếu biến môi trường ${name} (xem .env.example)`);
   return v;
+}
+
+function parseFcTarget(raw: string): FcTargetMode {
+  const v = raw.trim().toLowerCase();
+  if (v === 'current' || v === 'next') return v;
+  throw new Error(`FC_TARGET phải là current hoặc next (nhận được: ${raw})`);
 }
 
 function num(name: string, def: number): number {
@@ -86,9 +92,32 @@ export const CFG = {
   /** Mặc định 02:00 mỗi ngày. */
   cronSchedule: process.env.CRON_SCHEDULE ?? '0 2 * * *',
   timezone: process.env.TZ_NAME ?? 'Asia/Ho_Chi_Minh',
-  /** Ngày trong tháng mà FC được sinh (mùng 1). */
-  fcDayOfMonth: num('FC_DAY_OF_MONTH', 1),
-  /** true = tính lại FC mỗi lượt cron, không chỉ mùng 1. */
+  /**
+   * Ngày sinh FC: 1..31, 'last' (ngày cuối tháng) hoặc 'last-N'.
+   *
+   * Mặc định 'last' — cuối tháng mới là lúc người dùng xem để dự báo cho tháng
+   * sau. Bản đầu chạy mùng 1; đổi về bằng FC_DAY_OF_MONTH=1 + FC_TARGET=current.
+   */
+  fcDay: parseFcDaySpec(process.env.FC_DAY_OF_MONTH ?? 'last'),
+
+  /**
+   * Tháng đích của lượt daemon.
+   *   'next'    — tháng SAU tháng đang chạy. Đi cùng FC_DAY_OF_MONTH='last'.
+   *   'current' — tháng đang chạy. Đi cùng FC_DAY_OF_MONTH=1.
+   */
+  fcTarget: parseFcTarget(process.env.FC_TARGET ?? 'next'),
+
+  /**
+   * Mùng 1, tính lại FC của tháng vừa bắt đầu ĐÚNG MỘT LẦN nữa.
+   *
+   * Cần thiết vì lượt cuối tháng lấy tháng đang chạy làm B1 mà tháng đó chưa
+   * đóng sổ — thiếu 1-2 ngày cuối, mà B1 mang trọng số 0.6. Lượt mùng 1 chạy lại
+   * khi B1 đã đủ ngày, nên số cuối tháng là số xem trước, số mùng 1 là số chốt.
+   * Tắt = chấp nhận FC hụt vài phần trăm cho tới cuối tháng sau.
+   */
+  fcFinalizeOnFirst: (process.env.FC_FINALIZE_ON_FIRST ?? 'true') === 'true',
+
+  /** true = tính lại FC mỗi lượt cron, không chỉ ngày sinh FC. */
   fcRecomputeDaily: (process.env.FC_RECOMPUTE_DAILY ?? 'false') === 'true',
 
   // ── HTTP (chế độ --serve) ────────────────────────────────────────────────

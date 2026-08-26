@@ -1,6 +1,8 @@
 import cron from 'node-cron';
 import { CFG } from '../config.js';
-import { firstOfMonth } from '../domain/period.js';
+import {
+  describeFcDaySpec, fcTargetMonth, firstOfMonth, isFcRunDay, toDateOnly,
+} from '../domain/period.js';
 import { buildRunner } from './container.js';
 import { stamp } from './runner.js';
 
@@ -12,9 +14,88 @@ import { stamp } from './runner.js';
  *     sales_transaction_v2, nên dữ liệu bán mới đổ về hôm trước tự động được
  *     cộng vào (02:00 ngày 17 → tổng ngày 01→16). Tháng đã qua coi như chốt sổ,
  *     không cập nhật lại nữa.
- *   - FC + MA3: chỉ chạy vào MÙNG 1, vì công thức cần 3 tháng liền trước đã
- *     đóng sổ. Mùng 1 cũng là lúc chốt sổ TT tháng trước lần cuối.
+ *   - FC + MA3: chạy CUỐI THÁNG cho tháng SAU, vì cuối tháng mới là lúc người
+ *     dùng xem để dự báo. Cộng thêm một lượt mùng 1 để chốt lại — xem dưới.
+ *
+ * ─── Vì sao FC chạy hai lượt mỗi tháng ──────────────────────────────────────
+ * Lượt cuối tháng lấy tháng ĐANG chạy làm B1, mà tháng đó chưa đóng sổ: 02:00
+ * ngày 31/08 thì dữ liệu bán mới tới khoảng 30/08. B1 mang trọng số 0.6 nên FC
+ * hụt vài phần trăm. Lượt mùng 1 tính lại đúng tháng đó khi B1 đã đủ ngày.
+ *
+ *   31/08 02:00 → FC tháng 9 (B1 = tháng 8 còn hở)   ← số xem trước
+ *   01/09 02:00 → FC tháng 9 (B1 = tháng 8 đã đủ)    ← số chốt
+ *
+ * FC là idempotent nên lượt hai chỉ sửa những dòng thật sự đổi. Tắt lượt chốt
+ * bằng FC_FINALIZE_ON_FIRST=false; về hẳn cách cũ (chỉ mùng 1) bằng
+ * FC_DAY_OF_MONTH=1 + FC_TARGET=current.
  */
+export interface RunPlan {
+  /** Tháng đích của FC + MA3. */
+  fcTarget: Date;
+  /** Tháng mới nhất tính lại TT — luôn là tháng hiện tại. */
+  ttTarget: Date;
+  doFc: boolean;
+  /** true = lượt mùng 1 tính lại FC của tháng vừa bắt đầu, khi B1 đã đủ ngày. */
+  finalize: boolean;
+  ttMonths: number;
+}
+
+/**
+ * Lượt chạy hôm nay làm gì. Hàm thuần — test được bằng cách đưa vào một ngày
+ * bất kỳ, không cần dựng daemon hay chờ tới cuối tháng.
+ */
+export function planRun(now: Date, cfg = CFG): RunPlan {
+  const thisMonth = firstOfMonth(now.getFullYear(), now.getMonth());
+  const isFcDay = isFcRunDay(now, cfg.fcDay);
+  const isFirst = now.getDate() === 1;
+  const finalize = cfg.fcFinalizeOnFirst && isFirst && !isFcDay;
+
+  // Lượt chốt nhắm tháng VỪA BẮT ĐẦU, không phải tháng sau: cuối tháng 8 đã ghi
+  // FC tháng 9, mùng 1/9 là tính lại chính tháng 9 đó khi B1 (tháng 8) đã đóng sổ.
+  const fcTarget = finalize ? thisMonth : fcTargetMonth(now, cfg.fcTarget);
+
+  // Mùng 1: thêm tháng trước vào phạm vi TT để chốt sổ lần cuối rồi khóa luôn.
+  // Gắn với mùng 1 chứ không gắn với ngày sinh FC — TT có nhịp riêng.
+  const ttMonths = isFirst && cfg.ttCloseoutPrevMonth
+    ? Math.max(cfg.ttMonths, 2)
+    : cfg.ttMonths;
+
+  return {
+    fcTarget,
+    ttTarget: thisMonth,
+    doFc: cfg.fcRecomputeDaily || isFcDay || finalize,
+    finalize,
+    ttMonths,
+  };
+}
+
+/**
+ * FC_DAY_OF_MONTH và FC_TARGET phải đi thành cặp. Ghép sai thì app vẫn chạy,
+ * vẫn ghi DB, chỉ có số là vô nghĩa — nên phải nói ra lúc khởi động chứ không
+ * đợi ai đó phát hiện qua báo cáo.
+ *
+ * Ghép sai điển hình: FC_DAY_OF_MONTH=1 (bản cũ) mà FC_TARGET=next (mặc định
+ * mới). Mùng 1/9 sẽ sinh FC cho tháng 10 với B1 = tháng 9 — gần như trống rỗng.
+ */
+function warnIfScheduleMismatched(): void {
+  if (CFG.fcRecomputeDaily) return;
+  const { fcDay, fcTarget } = CFG;
+
+  if (fcTarget === 'next' && fcDay.kind === 'day' && fcDay.day <= 20) {
+    console.warn(
+      `            ⚠ FC_DAY_OF_MONTH=${fcDay.day} + FC_TARGET=next: sinh FC cho tháng sau khi` +
+      ' tháng này mới bắt đầu, B1 gần như trống. Dùng FC_DAY_OF_MONTH=last,' +
+      ' hoặc FC_TARGET=current.',
+    );
+  }
+  if (fcTarget === 'current' && fcDay.kind === 'fromEnd') {
+    console.warn(
+      '            ⚠ FC_DAY_OF_MONTH=last + FC_TARGET=current: cuối tháng mới sinh FC cho' +
+      ' chính tháng đó — dự báo cho một tháng đã gần hết. Có lẽ muốn FC_TARGET=next.',
+    );
+  }
+}
+
 export function startDaemon(dryRun = false): void {
   if (!cron.validate(CFG.cronSchedule)) {
     throw new Error(`CRON_SCHEDULE không hợp lệ: ${CFG.cronSchedule}`);
@@ -27,8 +108,14 @@ export function startDaemon(dryRun = false): void {
   console.log(`Lịch        ${CFG.cronSchedule}  (${CFG.timezone})`);
   console.log(`TT          mỗi lượt, ${CFG.ttMonths} tháng gần nhất`);
   console.log(
-    `FC + MA3    ${CFG.fcRecomputeDaily ? 'mỗi lượt' : `chỉ ngày ${CFG.fcDayOfMonth} hằng tháng`}`,
+    `FC + MA3    ${CFG.fcRecomputeDaily
+      ? 'mỗi lượt'
+      : `${describeFcDaySpec(CFG.fcDay)} → tháng ${CFG.fcTarget === 'next' ? 'sau' : 'hiện tại'}`}`,
   );
+  if (CFG.fcFinalizeOnFirst && !CFG.fcRecomputeDaily) {
+    console.log('            + mùng 1 chốt lại tháng vừa bắt đầu (B1 đã đủ ngày)');
+  }
+  warnIfScheduleMismatched();
   if (dryRun) console.log('CHẾ ĐỘ      dry-run — mỗi lượt chỉ tính, không ghi DB');
   console.log('Ctrl+C để dừng.');
   console.log('─'.repeat(64));
@@ -46,26 +133,21 @@ export function startDaemon(dryRun = false): void {
       running = true;
 
       const now = new Date();
-      const target = firstOfMonth(now.getFullYear(), now.getMonth());
-      const isFcDay = now.getDate() === CFG.fcDayOfMonth;
-      const doFc = CFG.fcRecomputeDaily || isFcDay;
-
-      // Ngày thường: chỉ tháng hiện tại. Mùng 1: thêm tháng trước để chốt sổ
-      // lần cuối rồi khóa luôn.
-      const ttMonths = isFcDay && CFG.ttCloseoutPrevMonth
-        ? Math.max(CFG.ttMonths, 2)
-        : CFG.ttMonths;
+      const plan = planRun(now);
 
       console.log(
-        `\n[${stamp()}] Bắt đầu lượt — ${doFc ? 'TT + FC' : 'chỉ TT'}` +
-        (ttMonths > CFG.ttMonths ? ' (chốt sổ tháng trước)' : ''),
+        `\n[${stamp()}] Bắt đầu lượt — ${plan.doFc ? 'TT + FC' : 'chỉ TT'}` +
+        (plan.doFc ? ` cho tháng ${toDateOnly(plan.fcTarget).slice(0, 7)}` : '') +
+        (plan.finalize ? ' (lượt chốt)' : '') +
+        (plan.ttMonths > CFG.ttMonths ? ' · chốt sổ TT tháng trước' : ''),
       );
       try {
         const s = await runner.run({
-          target,
-          only: doFc ? 'both' : 'tt',
+          target: plan.fcTarget,
+          ttTarget: plan.ttTarget,
+          only: plan.doFc ? 'both' : 'tt',
           dryRun,
-          ttMonths,
+          ttMonths: plan.ttMonths,
         });
         console.log(
           `[${stamp()}] Xong — thêm ${s.written.inserted} · sửa ${s.written.updated}` +
