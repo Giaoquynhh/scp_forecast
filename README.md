@@ -298,6 +298,8 @@ Hai cron là thứ đáng lo nhất vì chúng tự chạy ngầm.
 
 ## Endpoint tổng lượng gạch
 
+Tài liệu đầy đủ (tham số, trường trả về, mã lỗi, ví dụ): **[API.md](API.md)**.
+
 ```bash
 npm run serve                    # nghe 127.0.0.1:3010
 npm run serve -- --port 4000     # đổi cổng
