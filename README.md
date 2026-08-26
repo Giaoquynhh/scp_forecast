@@ -25,6 +25,8 @@ npm start -- --only fc          # chỉ FC
 npm start -- --only tt          # chỉ TT
 npm start -- --dry-run          # tính và in ra, KHÔNG ghi DB
 npm start -- --limit 20         # chỉ ghi 20 dòng đầu, để thử
+
+npm run serve                   # HTTP đọc-thuần cho endpoint tổng (xem mục dưới)
 ```
 
 ---
@@ -240,6 +242,74 @@ Hai cron là thứ đáng lo nhất vì chúng tự chạy ngầm.
 
 ---
 
+## Endpoint tổng lượng gạch
+
+```bash
+npm run serve                    # nghe 127.0.0.1:3010
+npm run serve -- --port 4000     # đổi cổng
+```
+
+```
+GET /demand/summary?from=2026-09&to=2026-09&groupBy=cn
+GET /health
+```
+
+Cộng `branch_forecast` **trong Postgres** rồi trả về tổng, thay vì để phía gọi kéo
+cả grid về tự cộng. Cả năm 2026 gộp theo (CN × tháng) — 82.921 dòng — ra **487 dòng
+/ 138 KB trong 0,6 giây**. Endpoint `grid/cn` bên SCP trả cùng dữ liệu đó dưới dạng
+từng ô, ~12 MB, và chính nó là lý do màn F1-B1 bị tạm dừng vì timeout.
+
+| Tham số | Mặc định | Ý nghĩa |
+|---|---|---|
+| `from` / `to` | tháng hiện tại | `YYYY-MM`, bao gồm cả hai đầu. Chỉ có `from` thì `to = from` |
+| `groupBy` | `cn` | `cn` · `month` · `cn-month` · `none` (chỉ lấy dòng tổng) |
+| `cnCode` | — | Lọc mã CN, ngăn bằng phẩy: `049,050` |
+| `skuCode` | — | Lọc mã SKU gốc, ngăn bằng phẩy |
+| `hideInactiveSku` | `true` | Ẩn SKU Ngừng — khớp mặc định của `grid/cn` bên SCP |
+| `rounded` | `false` | `true` = đọc cột `fc_qty_rounded` / `actual_qty_rounded` |
+
+Mỗi dòng có `fcQty`, `ma3Qty`, `actualQty` (Σ ba cột, đọc thẳng, không tính lại),
+`gapQty` = fc − actual, `gapPct`, và hai chỉ số sai lệch đặt cạnh nhau:
+
+```
+fcWmapePct  = Σ|fc  − actual| / Σactual × 100
+ma3WmapePct = Σ|ma3 − actual| / Σactual × 100
+```
+
+WMAPE khác `|gapPct|` ở chỗ **sai số thừa của SKU này không bù trừ sai số thiếu của
+SKU kia** — tổng có thể khớp hoàn hảo trong khi từng SKU sai bét. Đo trên dữ liệu
+thật tháng 6/2026: `gapPct` −53,56% mà `fcWmapePct` 105,73%.
+
+Kèm các bộ đếm `rowCount`, `skuCount`, `cnCount`, `ma3RowCount`,
+`comparableRowCount`.
+
+**NULL không phải 0.** `actualQty: null` là *tháng chưa có TT*, không phải bán được
+0 — nên `gapQty` và WMAPE cũng `null` thay vì ra số vô nghĩa. `ma3RowCount` nhỏ hơn
+`rowCount` nghĩa là còn dòng do FC engine cũ bên SCP ghi, chưa có MA3. Hai WMAPE có
+**mẫu số riêng**, chỉ cộng trên dòng có đủ cả hai số; dùng chung `actualQty` tổng sẽ
+làm sai số nhìn nhỏ đi một cách giả tạo.
+
+`total` là tổng của **toàn bộ khoảng lọc**, không phải tổng của `rows` —
+`skuCount`/`cnCount` là đếm phân biệt nên không cộng dồn từ các nhóm con được (một
+SKU bán ở 5 CN vẫn là 1 SKU). Vì vậy nó được gom bằng một lượt `GROUP BY` rỗng riêng.
+
+Đối chiếu với số trong mục MA3 ở trên (`hideInactiveSku=0` để không lọc SKU Ngừng):
+
+```bash
+curl "localhost:3010/demand/summary?from=2026-09&groupBy=none&hideInactiveSku=0"
+# fcQty 453275.52   ma3Qty 529381.12
+```
+
+> ⚠ Server này **không có auth/RBAC** như SCP. Mặc định chỉ nghe `127.0.0.1`; đổi
+> `HTTP_HOST` là ai trong mạng cũng đọc được số bán của toàn bộ chi nhánh. Muốn đưa
+> ra ngoài thì đặt sau reverse proxy có xác thực.
+
+Vì sao endpoint nằm ở app này mà không phải `SmartlogSCP.Backend`: cùng lý do app
+ghi DB trực tiếp thay vì gọi API — **không đụng code SCP**. Đổi lại, FE phải gọi hai
+base URL, và không dùng được `DEMAND_AGGREGATION_VIEW` của SCP.
+
+---
+
 ## Cấu trúc
 
 Ba tầng, phụ thuộc chỉ đi một chiều **app → domain** và **app → infra**.
@@ -250,6 +320,7 @@ src/
   domain/                    nghiệp vụ thuần — không có SQL, không import pg
     forecast-formula.ts        weighted / perDay / FC / MA3
     period.ts                  tháng đích T và 3 khối B1/B2/B3
+    summary.ts                 gap / WMAPE, kiểm tra tham số + interface SummaryReader
     types.ts                   kiểu dữ liệu + interface SalesReader, ForecastWriter
 
   infra/                     nói chuyện với Postgres — không có công thức
@@ -257,10 +328,13 @@ src/
     sales.repository.ts        SalesRepository   (đọc sales_transaction_v2)
     branch-forecast.repository.ts
                                BranchForecastRepository (upsert + lịch sử + version)
+    summary.repository.ts      SummaryRepository (GROUP BY trên branch_forecast)
     migrator.ts                chạy các file trong migrations/
 
   app/                       điều phối
     forecast.service.ts        ForecastService — gọi reader, áp công thức, gọi writer
+    summary.service.ts         SummaryService — gọi reader 2 lượt: nhóm + dòng tổng
+    http.ts                    server node:http thuần, 2 route đọc-thuần
     runner.ts                  một lượt tính + ghi, phần in ra màn hình
     container.ts               composition root: chỗ DUY NHẤT ghép các tầng
     scheduler.ts               daemon cron
@@ -279,16 +353,22 @@ tách, công thức là hàm thuần test được bằng số liệu tay, còn 
 phụ thuộc **interface** `SalesReader` / `ForecastWriter` chứ không phụ thuộc
 Postgres — nên test service chỉ cần object giả.
 
-Class chỉ dùng ở chỗ **thật sự giữ state**: hai repository giữ connection pool,
+Class chỉ dùng ở chỗ **thật sự giữ state**: ba repository giữ connection pool,
 service giữ dependency. Công thức và xử lý ngày tháng vẫn là hàm thuần — bọc
 chúng vào class chỉ làm code dài ra mà không được gì.
+
+Endpoint tổng đi theo đúng lối đó: `SummaryRepository` chỉ cộng, mọi phép chia và
+làm tròn nằm ở `domain/summary.ts`, và `SummaryService` phụ thuộc interface
+`SummaryReader` — nên test WMAPE chỉ cần một reader giả, không cần DB. Tầng HTTP
+dùng `node:http` thuần, không thêm dependency nào: app này có 2 route đọc-thuần,
+một framework ở đây chỉ thêm 50+ package vào cây phụ thuộc của một tiến trình cron.
 
 **Lưu ý:** công thức chạy bằng số dấu phẩy động của JS thay vì `numeric` của
 Postgres. Mỗi dòng vẫn làm tròn 2 chữ số; tổng của 9.517 dòng lệch khoảng 1 m²
 (0,0002%) so với bản tính trong SQL.
 
 ```bash
-npm test        # 15 test, ~0,3 giây, không cần DB
+npm test        # 47 test, ~0,4 giây, không cần DB
 npm run typecheck
 ```
 
@@ -304,3 +384,5 @@ npm run typecheck
 | `CRON_SCHEDULE` | `0 2 * * *` | Lịch chạy daemon |
 | `FC_DAY_OF_MONTH` | 1 | Ngày sinh FC |
 | `FC_RECOMPUTE_DAILY` | false | true = tính lại FC mỗi ngày |
+| `HTTP_PORT` | 3010 | Cổng của `npm run serve` |
+| `HTTP_HOST` | 127.0.0.1 | Địa chỉ nghe. Đổi = mở ra cả mạng, endpoint không có auth |

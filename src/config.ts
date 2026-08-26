@@ -90,4 +90,13 @@ export const CFG = {
   fcDayOfMonth: num('FC_DAY_OF_MONTH', 1),
   /** true = tính lại FC mỗi lượt cron, không chỉ mùng 1. */
   fcRecomputeDaily: (process.env.FC_RECOMPUTE_DAILY ?? 'false') === 'true',
+
+  // ── HTTP (chế độ --serve) ────────────────────────────────────────────────
+  /** Cổng của server đọc-thuần GET /demand/summary. */
+  httpPort: num('HTTP_PORT', 3010),
+  /**
+   * Địa chỉ lắng nghe. Mặc định 127.0.0.1 — server này KHÔNG có auth, mở ra
+   * 0.0.0.0 là ai trong mạng cũng đọc được số bán của toàn bộ chi nhánh.
+   */
+  httpHost: process.env.HTTP_HOST ?? '127.0.0.1',
 } as const;

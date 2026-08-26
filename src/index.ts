@@ -26,6 +26,17 @@ async function main(): Promise<void> {
     return; // daemon giữ tiến trình sống, không đóng pool
   }
 
+  if (args.serve) {
+    const { buildHttpServer } = await import('./app/container.js');
+    const { CFG } = await import('./config.js');
+    buildHttpServer().listen(args.port, CFG.httpHost, () => {
+      console.log(`Đang nghe http://${CFG.httpHost}:${args.port}`);
+      console.log('  GET /health');
+      console.log('  GET /demand/summary?from=YYYY-MM&to=YYYY-MM&groupBy=cn');
+    });
+    return; // server giữ tiến trình sống, không đóng pool
+  }
+
   const { buildRunner } = await import('./app/container.js');
   const { resolveTarget } = await import('./domain/period.js');
   const { pool } = await import('./infra/db.js');

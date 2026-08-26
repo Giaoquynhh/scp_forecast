@@ -1,8 +1,12 @@
+import type { Server } from 'node:http';
 import { CFG } from '../config.js';
 import { pool } from '../infra/db.js';
 import { SalesRepository } from '../infra/sales.repository.js';
 import { BranchForecastRepository } from '../infra/branch-forecast.repository.js';
+import { SummaryRepository } from '../infra/summary.repository.js';
 import { ForecastService } from './forecast.service.js';
+import { SummaryService } from './summary.service.js';
+import { createHttpServer } from './http.js';
 import { Runner } from './runner.js';
 
 /**
@@ -22,4 +26,11 @@ export function buildRunner(): Runner {
     actor: CFG.actor,
   });
   return new Runner(service);
+}
+
+/** Server đọc-thuần cho GET /demand/summary. Dùng chung pool với lượt tính. */
+export function buildHttpServer(): Server {
+  return createHttpServer({
+    summary: new SummaryService(new SummaryRepository(pool)),
+  });
 }
