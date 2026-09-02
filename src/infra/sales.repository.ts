@@ -1,5 +1,7 @@
 import type pg from 'pg';
-import type { ActualLine, PairBlockTotals, SalesReader } from '../domain/types.js';
+import type {
+  ActualLine, PairBlockTotals, PairWindowTotal, SalesReader,
+} from '../domain/types.js';
 
 /**
  * Đọc dữ liệu bán từ f2_supply.sales_transaction_v2.
@@ -89,6 +91,50 @@ export class SalesRepository implements SalesReader {
       skuCode: r.sku_code,
       periodStart: r.period_start,
       actualQty: r.actual_qty,
+    }));
+  }
+
+  /**
+   * Tổng bán m² của từng cặp CN×SKU trong `days` ngày gần nhất — đầu vào của TB
+   * trượt (xem domain/sales-ma.ts).
+   *
+   * Biên cửa sổ CỐ Ý giống hệt CTE `ma_tt` mà SCP đang dùng — mở ở đầu, đóng ở cuối
+   * (`> CURRENT_DATE - n` và `<= CURRENT_DATE`) — để cột ghi sẵn không lệch một ngày
+   * so với con số người dùng đang thấy. Cửa sổ 90 ngày ở đây là 90 ngày, không phải 91.
+   *
+   * Bộ lọc theo quy tắc chung của app (chỉ m², chỉ lượng bán ra, cn_code phải có
+   * trong `channel`) chứ KHÔNG theo quy tắc cũ của SCP. Khác biệt đo trên dữ liệu
+   * thật 90 ngày: SCP trừ dòng trả hàng nên thấp hơn 25.386 / 1.700.863 m² = 1,5%;
+   * còn chuỗi quy đổi uom_levelN của SCP thì không đổi gì vì sổ bán chỉ có đơn vị
+   * M2 và các đơn vị không quy được (KG/Bộ/Cái…), không có Hộp/Viên/Pallet.
+   */
+  async windowTotals(days: number): Promise<PairWindowTotal[]> {
+    if (!Number.isInteger(days) || days < 1) {
+      throw new RangeError(`days phải là số nguyên >= 1 (nhận được: ${days})`);
+    }
+    const { rows } = await this.pool.query<{
+      cn_code: string; sku_code: string; total_m2: number;
+    }>(
+      `
+      SELECT st.branch_code_0 AS cn_code,
+             s.sku_code,
+             round(sum(st.quantity), 2) AS total_m2
+        FROM f2_supply.sales_transaction_v2 st
+        JOIN public.sku s     ON st.item_code = s.bravo_sku
+        JOIN public.channel c ON c.cn_code = st.branch_code_0
+       WHERE ${SalesRepository.FILTER}
+         AND st.doc_date >  (CURRENT_DATE - ($1 || ' days')::interval)::date
+         AND st.doc_date <= CURRENT_DATE
+       GROUP BY 1, 2
+       ORDER BY 1, 2
+      `,
+      [days],
+    );
+
+    return rows.map((r) => ({
+      cnCode: r.cn_code,
+      skuCode: r.sku_code,
+      totalM2: r.total_m2,
     }));
   }
 

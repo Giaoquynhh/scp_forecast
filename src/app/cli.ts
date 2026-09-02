@@ -50,8 +50,11 @@ export function parseArgs(argv: string[]): CliArgs {
     else throw new Error(`Tham số lạ: ${token}`);
   }
 
-  if (!['fc', 'tt', 'both', 'ma3'].includes(args.only)) {
-    throw new Error(`--only phải là fc | tt | both | ma3 (nhận được: ${args.only})`);
+  if (!['fc', 'tt', 'both', 'ma3', 'tt-fill', 'tt-close', 'sales-ma'].includes(args.only)) {
+    throw new Error(
+      '--only phải là fc | tt | both | ma3 | tt-fill | tt-close | sales-ma' +
+      ` (nhận được: ${args.only})`,
+    );
   }
   if (!Number.isInteger(args.ttMonths) || args.ttMonths < 1) {
     throw new Error('--tt-months phải là số nguyên >= 1');
@@ -80,8 +83,16 @@ scp-forecast — tính TT, FC và MA3 rồi ghi vào branch_forecast
   npm start -- --only fc          chỉ tính FC + MA3
   npm start -- --only tt          chỉ tính TT
   npm start -- --month 2026-03 --only ma3
+  npm start -- --month 2026-03 --only tt-fill    lấp TT vào ô còn TRỐNG mà tháng đó CÓ bán
+                                  thuần bổ sung: không ghi đè số nào, không tạo ô TT=0
+  npm start -- --month 2026-03 --only tt-close   đóng sổ TT=0 cho dòng có dự báo mà bán 0
+                                  hạ accuracy toàn hệ thống — quyết định vận hành
                                   điền bù MA3 vào tháng cũ — chỉ sửa dòng đã có,
                                   KHÔNG đụng fc_qty, KHÔNG thêm dòng mới
+  npm start -- --only sales-ma    CHỈ tính lại TB trượt bán n ngày (cột sales_ma_qty)
+                                  n đọc từ system_config planning.ma_months (mặc định 90)
+                                  F1-B3 bên SCP đọc thẳng cột này; lượt 'both'/'tt'
+                                  cũng đã tính nó rồi, mode này để chạy lại riêng
   npm start -- --dry-run          tính và in kết quả, KHÔNG ghi DB
   npm start -- --tt-months 2      số tháng gần nhất được tính lại TT
   npm start -- --limit 20         chỉ ghi N dòng đầu (để thử)

@@ -14,6 +14,9 @@ import { stamp } from './runner.js';
  *     sales_transaction_v2, nên dữ liệu bán mới đổ về hôm trước tự động được
  *     cộng vào (02:00 ngày 17 → tổng ngày 01→16). Tháng đã qua coi như chốt sổ,
  *     không cập nhật lại nữa.
+ *   - TB trượt bán n ngày (cột `sales_ma_qty` — F1-B3 bên SCP đọc): luôn tính lại,
+ *     mọi lượt. Cửa sổ tính tới hôm nay nên nó cũ đi mỗi ngày, không đợi ngày sinh
+ *     FC. Chạy trong cả lượt 'both' lẫn lượt 'tt' — xem SALES_MA_MODES ở runner.
  *   - FC + MA3: chạy CUỐI THÁNG cho tháng SAU, vì cuối tháng mới là lúc người
  *     dùng xem để dự báo. Cộng thêm một lượt mùng 1 để chốt lại — xem dưới.
  *
@@ -107,6 +110,7 @@ export function startDaemon(dryRun = false): void {
   console.log(`scp-forecast daemon · ${stamp()}`);
   console.log(`Lịch        ${CFG.cronSchedule}  (${CFG.timezone})`);
   console.log(`TT          mỗi lượt, ${CFG.ttMonths} tháng gần nhất`);
+  console.log('TB trượt    mỗi lượt, cửa sổ n ngày theo system_config planning.ma_months');
   console.log(
     `FC + MA3    ${CFG.fcRecomputeDaily
       ? 'mỗi lượt'

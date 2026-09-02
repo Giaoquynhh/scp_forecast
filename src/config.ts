@@ -70,6 +70,14 @@ export const CFG = {
   ttMonths: num('TT_MONTHS', 1),
 
   /**
+   * Ràng buộc: 2 tháng gần nhất (B1, B2) không bán gì → FC = 0.
+   *
+   * Để tắt được vì nó là quyết định nghiệp vụ, không phải hằng số toán học — muốn đo
+   * "có nó tốt hơn hay không" thì phải chạy được cả hai phía. KHÔNG đụng tới MA3.
+   */
+  fcZeroWhenDormant: (process.env.FC_ZERO_WHEN_DORMANT ?? 'true') !== 'false',
+
+  /**
    * Vào ngày sinh FC (mùng 1), tính lại TT của tháng liền trước ĐÚNG MỘT LẦN
    * để chốt sổ — nếu không, những ngày cuối tháng sẽ không bao giờ được cộng
    * (02:00 ngày 28 mới cộng tới ngày 27), mà FC tháng mới lại lấy tháng đó làm B1.

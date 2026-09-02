@@ -36,6 +36,21 @@ export interface ActualLine {
   actualQty: number;
 }
 
+/** Tổng m² bán của một cặp CN×SKU trong một cửa sổ ngày (dùng cho TB trượt). */
+export interface PairWindowTotal {
+  cnCode: string;
+  skuCode: string;
+  totalM2: number;
+}
+
+/** TB trượt bán (m²/tháng) của một cặp CN×SKU, gắn với tháng được ghi vào. */
+export interface SalesMaLine {
+  cnCode: string;
+  skuCode: string;
+  periodStart: string;
+  salesMaQty: number;
+}
+
 /** Một dòng chuẩn bị ghi xuống branch_forecast. Bỏ trống = giữ nguyên giá trị cũ. */
 export interface ForecastRecord {
   cnCode: string;
@@ -44,6 +59,8 @@ export interface ForecastRecord {
   fcQty?: number | null;
   actualQty?: number | null;
   ma3?: number | null;
+  /** TB trượt bán n ngày, m²/THÁNG. Xem domain/sales-ma.ts. */
+  salesMaQty?: number | null;
 }
 
 export interface WriteOptions {
@@ -87,8 +104,29 @@ export interface SalesReader {
   /** Tổng bán m² theo cặp CN×SKU × tháng, trong khoảng tháng [from, to]. */
   monthlyActuals(fromMonth: string, toMonth: string): Promise<ActualLine[]>;
 
+  /**
+   * Tổng bán m² theo cặp CN×SKU trong `days` ngày gần nhất tính tới HÔM NAY.
+   *
+   * Cửa sổ trượt theo ngày chạy, không theo tháng — nên nó không dùng lại được
+   * `monthlyActuals`. Xem domain/sales-ma.ts.
+   */
+  windowTotals(days: number): Promise<PairWindowTotal[]>;
+
   /** Ngày có dữ liệu bán mới nhất kể từ `since`. */
   latestSalesDate(since: string): Promise<string | null>;
+}
+
+/**
+ * Hợp đồng đọc cấu hình vận hành. Hiện chỉ dùng cho `planning.ma_months` (cửa sổ
+ * TB trượt) — bảng `system_config` là của SCP, app này chỉ ĐỌC, không bao giờ ghi.
+ *
+ * Vì sao đọc key của SCP thay vì tự khai trong .env: người dùng đổi n ở popup
+ * "Điều chỉnh tham số tính toán" bên SCP. Nếu app này có biến riêng thì n sẽ có hai
+ * nguồn, và cột hiển thị số tính bằng cửa sổ khác với cửa sổ ghi trên nhãn.
+ */
+export interface PlanningConfigReader {
+  /** Giá trị thô của một key; null khi chưa có hoặc không đọc được. */
+  value(key: string): Promise<string | null>;
 }
 
 /** Hợp đồng ghi xuống branch_forecast. */
@@ -99,10 +137,75 @@ export interface ForecastWriter {
   pairsWithActuals(fromMonth: string, toMonth: string): Promise<ActualLine[]>;
 
   /**
+   * Ô TRỐNG HẲN trong khoảng tháng: cặp CN×SKU đã có dòng ở ít nhất một tháng của
+   * khoảng, nhưng thiếu dòng ở tháng này.
+   *
+   * `engineMonths` = các tháng thật sự có dòng do engine sinh (source FC). Chỉ những
+   * tháng đó mới suy được "thiếu dòng ⇒ 3 khối rỗng ⇒ FC = MA3 = 0"; tháng engine chưa
+   * chạy thì thiếu dòng nghĩa là "chưa tính", điền 0 ở đó là bịa số.
+   */
+  emptyCellsInWindow(fromMonth: string, toMonth: string): Promise<{
+    cells: Array<{ cnCode: string; skuCode: string; periodStart: string }>;
+    engineMonths: string[];
+  }>;
+
+  /**
+   * Cặp ĐÃ có actual_qty mà `fc_qty` còn trống, trong khoảng tháng.
+   *
+   * Sinh ra từ đường ghi TT: nó insert dòng để lưu số bán và không đặt cột dự báo nào.
+   * Với những cặp đó engine KHÔNG bỏ sót — nó đã loại chúng ở cổng hasDemand vì 3 khối
+   * đầu vào rỗng, tức công thức cho ra đúng 0. Để NULL là giả vờ không ai có ý kiến,
+   * trong khi sự thật là "cả hai mô hình cùng dự báo 0". Xem
+   * ForecastService.fillMissingForecast().
+   */
+  pairsWithActualNoForecast(fromMonth: string, toMonth: string): Promise<Array<{
+    cnCode: string; skuCode: string; periodStart: string;
+  }>>;
+
+  /**
+   * MỌI cặp trong khoảng tháng đã có actual_qty, kể cả 0 — kèm số đang lưu.
+   *
+   * Khác `pairsWithActuals` (lọc `<> 0`) ở đúng chỗ quyết định: cái này trả lời
+   * "ô đã có số chưa", nên phân biệt được ô TRỐNG (cần lấp) với số ĐÃ CHỐT
+   * (không đụng). Trả kèm giá trị để đối chiếu với sổ bán mà báo cáo phần đã
+   * chốt nay không còn khớp — xem ForecastService.calculateActuals().
+   */
+  actualsOnRecord(fromMonth: string, toMonth: string): Promise<ActualLine[]>;
+
+  /**
+   * Các cặp CÓ dự báo nhưng actual_qty còn trống trong khoảng tháng — để đóng sổ về 0.
+   * Xem ForecastService.calculateActuals(): trống ≠ chưa biết, mà là không bán được gì.
+   */
+  pairsWithForecastNoActual(fromMonth: string, toMonth: string): Promise<Array<{
+    cnCode: string; skuCode: string; periodStart: string;
+  }>>;
+
+  /**
    * Các cặp của tháng đích đang có fc_qty hoặc ma3 khác 0 — để đưa về 0 những
    * dòng kỳ này không còn phát sinh bán (số cũ của lần chạy trước nằm lại).
    */
   pairsWithForecast(periodStart: string): Promise<Array<{
+    cnCode: string; skuCode: string; periodStart: string;
+  }>>;
+
+  /**
+   * Các cặp của tháng đích có fc_qty nhưng thiếu ma3 — để giữ bất biến
+   * "dòng nào có FC thì cũng có MA3". Xem ForecastService.fillMissingMa3().
+   */
+  pairsMissingMa3(periodStart: string): Promise<Array<{
+    cnCode: string; skuCode: string; periodStart: string;
+  }>>;
+
+  /**
+   * Các cặp của tháng đích đang có `sales_ma_qty` khác 0 — để đưa về 0 những cặp
+   * đã rơi ra khỏi cửa sổ trượt.
+   *
+   * BẮT BUỘC phải có bước này, khác với FC/MA3 ở chỗ hệ quả nặng hơn: F1-B3 cộng
+   * cột này qua các CN rồi so với tồn để ra "Khẩn cấp" và "Lượng đặt bán đầu". Một
+   * cặp bán lần cuối cách đây 4 tháng mà số cũ nằm lại thì tổng theo SKU bị phồng
+   * vĩnh viễn, và hệ thống đặt hàng cho một mã đã ngừng bán.
+   */
+  pairsWithSalesMa(periodStart: string): Promise<Array<{
     cnCode: string; skuCode: string; periodStart: string;
   }>>;
 }

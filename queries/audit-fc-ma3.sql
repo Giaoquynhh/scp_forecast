@@ -73,7 +73,9 @@ SELECT count(*)                                                          AS cap_
        count(f.id)                                                       AS co_dong_trong_db,
        count(*) - count(f.id)                                            AS thieu_dong,
        count(*) FILTER (WHERE f.ma3 IS NULL)                             AS ma3_con_null,
-       count(*) FILTER (WHERE abs(f.ma3 - round((b.b1+b.b2+b.b3)/3, 2)) > 0.01)               AS ma3_lech,
+       -- MA3 = FC với trọng số đều: cùng /30 và cùng ×30 ngày của tháng đích 2026-09.
+       -- (Từ 26/08/2026 MA3 có quy ngày — trước đó là (b1+b2+b3)/3 trần trụi.)
+       count(*) FILTER (WHERE abs(f.ma3 - round((b.b1+b.b2+b.b3)/3/30*30, 2)) > 0.01)         AS ma3_lech,
        count(*) FILTER (WHERE abs(f.fc_qty - round((0.6*b.b1+0.3*b.b2+0.1*b.b3)/30*30, 2)) > 0.01) AS fc_lech
   FROM b
   LEFT JOIN branch_forecast f

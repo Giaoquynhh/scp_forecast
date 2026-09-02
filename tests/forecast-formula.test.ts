@@ -45,18 +45,33 @@ describe('công thức FC', () => {
 });
 
 describe('MA3', () => {
-  it('là trung bình cộng, không trọng số', () => {
-    assert.equal(movingAverage3({ b1: 310, b2: 300, b3: 150 }), 253.33);
+  it('là trung bình cộng, quy về tháng đích như FC', () => {
+    const blocks = { b1: 310, b2: 300, b3: 150 };
+    // (310+300+150)/3 = 253.33 → /30 = 8.44/ngày → ×30 ngày = 253.33
+    assert.equal(movingAverage3(blocks, 30, 30), 253.33);
+    // tháng 31 ngày thì nhiều hơn đúng 1 ngày bán — chỗ mà bản cũ bỏ qua
+    assert.equal(movingAverage3(blocks, 30, 31), 261.78);
   });
 
   it('cao hơn FC khi tháng xa bán nhiều hơn tháng gần', () => {
     const blocks = { b1: 100, b2: 300, b3: 500 };
-    assert.ok(movingAverage3(blocks) > forecastQty(blocks, W, 30, 30));
+    assert.ok(movingAverage3(blocks, 30, 30) > forecastQty(blocks, W, 30, 30));
   });
 
-  it('không phụ thuộc số ngày của tháng đích', () => {
+  it('đúng bằng FC khi trọng số đều — khác nhau CHỈ còn ở trọng số', () => {
     const blocks = { b1: 90, b2: 60, b3: 30 };
-    assert.equal(movingAverage3(blocks), 60);
+    const đều: Weights = [1 / 3, 1 / 3, 1 / 3];
+    assert.equal(movingAverage3(blocks, 30, 31), forecastQty(blocks, đều, 30, 31));
+  });
+
+  it('co giãn theo số ngày tháng đích y như FC (28 vs 31)', () => {
+    const blocks = { b1: 300, b2: 300, b3: 300 };
+    assert.equal(movingAverage3(blocks, 30, 28), 280);
+    assert.equal(movingAverage3(blocks, 30, 31), 310);
+  });
+
+  it('không bán gì thì MA3 = 0', () => {
+    assert.equal(movingAverage3({ b1: 0, b2: 0, b3: 0 }, 30, 31), 0);
   });
 });
 

@@ -23,6 +23,7 @@ npm start                       # chạy một lượt cho tháng hiện tại
 npm start -- --month 2026-09    # chạy cho tháng chỉ định
 npm start -- --only fc          # chỉ FC
 npm start -- --only tt          # chỉ TT
+npm start -- --only sales-ma    # chỉ TB trượt bán 90 ngày (cột F1-B3 đọc)
 npm start -- --dry-run          # tính và in ra, KHÔNG ghi DB
 npm start -- --limit 20         # chỉ ghi 20 dòng đầu, để thử
 
@@ -37,6 +38,7 @@ npm run serve                   # HTTP đọc-thuần cho endpoint tổng (xem m
 
 | Ngày | Việc |
 |---|---|
+| Mọi lượt | Tính lại **TB trượt bán 90 ngày** (cột `sales_ma_qty`, xem mục dưới) |
 | Ngày thường | Tính lại **TT của tháng hiện tại** |
 | **Ngày cuối tháng** | Tính lại TT → sinh **FC + MA3 cho tháng SAU** ← số người dùng xem |
 | **Mùng 1** | Chốt sổ TT tháng trước lần cuối → tính lại TT tháng mới → **tính lại FC của tháng vừa bắt đầu** ← số chốt |
@@ -181,19 +183,26 @@ Muốn bật SSL cho Postgres local: đặt `ssl = on` trong `postgresql.conf`, 
 Cột `branch_forecast.ma3`, do app này ghi cùng lúc với FC:
 
 ```
-MA3 = (B1 + B2 + B3) / 3
+MA3 = FC nhưng với trọng số đều:  (1/3·B1 + 1/3·B2 + 1/3·B3) / 30 × số ngày tháng đích
 ```
 
-Dùng **đúng 3 khối mà FC dùng** và cùng bộ lọc (chỉ m², chỉ lượng bán ra). Khác
-FC ở hai chỗ: **không có trọng số** và **không quy theo số ngày** của tháng đích.
-Cùng ví dụ trên (B1 = 310, B2 = 300, B3 = 150):
+MA3 đi **đúng đường FC đi** — cùng 3 khối, cùng bộ lọc, cùng bước `/30 × daysInTarget` —
+và chỉ khác mỗi bộ trọng số. Nhờ vậy bảng đối chiếu FC vs MA3 trả lời đúng một câu: trọng
+số lệch có hơn trọng số đều không.
+
+> Trước 26/08/2026 MA3 là `(B1+B2+B3)/3` trần trụi, bỏ hẳn bước quy ngày, nên với tháng 31
+> ngày nó lệch ~3% so với FC vì một lý do chẳng liên quan gì tới trọng số. Chú thích trong
+> `migrations/001_add_ma3.sql` vẫn ghi công thức cũ — giữ nguyên vì migration là bản ghi
+> lịch sử của lúc nó chạy.
+
+Cùng ví dụ trên (B1 = 310, B2 = 300, B3 = 150), tháng đích 31 ngày:
 
 ```
 FC  = (0.6·310 + 0.3·300 + 0.1·150) / 30 × 31 = 300,7 m²   ← ưu tiên tháng gần
-MA3 = (310 + 300 + 150) / 3                   = 253,3 m²   ← cào bằng 3 tháng
+MA3 = (310 + 300 + 150) / 3        / 30 × 31 = 261,7 m²   ← cào bằng 3 tháng
 ```
 
-Đo trên dữ liệu thật cho tháng 9/2026: FC 453.275 m², MA3 529.381 m² — MA3 cao
+Đo trên dữ liệu thật cho tháng 9/2026: FC 495.039 m², MA3 558.434 m² — MA3 cao
 hơn vì tháng xa (B3) được tính ngang tháng gần, mà tháng 6 bán nhiều hơn tháng 8.
 
 ### Cột đã thêm vào DB
@@ -201,7 +210,9 @@ hơn vì tháng xa (B3) được tính ngang tháng gần, mà tháng 6 bán nhi
 | Bảng | Cột | Kiểu |
 |---|---|---|
 | `branch_forecast` | `ma3` | `numeric(15,2)` NULL |
+| `branch_forecast` | `sales_ma_qty` | `numeric(15,2)` NULL |
 | `branch_forecast_history` | `old_ma3`, `new_ma3` | `numeric(15,2)` NULL |
+| `branch_forecast_history` | `old_sales_ma_qty`, `new_sales_ma_qty` | `numeric(15,2)` NULL |
 
 Chạy bằng `npm run migrate` — file trong `migrations/`, đã chạy thì lần sau bỏ
 qua (ghi vết ở bảng `forecast_app_migration`).
@@ -213,6 +224,51 @@ qua (ghi vết ở bảng `forecast_app_migration`).
 Muốn SCP hiển thị MA3 thì phải khai thêm cột vào entity
 `SmartlogSCP.Backend/src/demand/entities/branch-forecast.entity.ts` — app này
 không đụng tới code SCP.
+
+---
+
+## TB trượt bán 90 ngày — cột `sales_ma_qty`
+
+Cột **"TB trượt Sales 90 ngày gần nhất"** của màn F1-B3 bên SCP. Từ 28/08/2026 app này
+tính sẵn và ghi vào DB; SCP chỉ `SELECT`.
+
+```
+sales_ma_qty = ( Σ m² bán trong 90 ngày gần nhất / 90 ) × 30      → m²/THÁNG
+```
+
+Cửa sổ tính **tới hôm nay** (`doc_date > CURRENT_DATE − 90` và `<= CURRENT_DATE`), đúng
+biên mà SCP đang dùng. Vì vậy nó chạy **mỗi lượt cron**, kể cả ngày thường — khác hẳn
+nhịp cuối-tháng của FC.
+
+| | |
+|---|---|
+| Grain | `(cn_code, sku_code)` — F1-B3 cộng qua CN rồi gom theo `sku_code` |
+| Dòng ghi vào | `period_start` = **tháng hiện tại**. Cửa sổ tính tới hôm nay nên chỉ dòng đó là đúng chỗ; lượt `--month` nhắm tháng khác sẽ **bỏ qua** bước này |
+| Đơn vị lưu | m²/**THÁNG** (đã ×30) — lưu đúng con số cột đang hiển thị để bên đọc khỏi phải nhân |
+| Bộ lọc | Cùng quy tắc TT/FC: chỉ `m2`, chỉ `quantity > 0`, `cn_code` phải có trong `channel` |
+| Dòng hết bán | Rơi khỏi cửa sổ → đưa về **0**, không để số cũ nằm lại |
+
+**Cửa sổ đang KHOÁ CỨNG 90 ngày.** Người dùng đổi `n` ở popup "Điều chỉnh tham số tính
+toán" bên SCP thì giá trị vẫn được lưu vào `system_config`, nhưng app bỏ qua và luôn tính
+90. Bỏ khoá: đặt `SALES_MA_LOCK_DEFAULT = false` ở `src/domain/sales-ma.ts` **và**
+`MA_TT_LOCKED_DAYS` bên `prod-lot-sizing.service.ts` — đường đọc config đã sẵn sàng và có
+test. Trước khi bỏ khoá phải trả lời được: đổi n xong thì bao giờ số mới đúng (cột chỉ làm
+mới mỗi 24h, mà nó đang ăn vào "Lượng đặt bán đầu" và cờ "Khẩn cấp").
+
+### Vì sao chuyển sang đây
+
+Trước đó SCP tính cột này bằng một CTE quét `sales_transaction_v2` (46 nghìn dòng trong
+cửa sổ) **trong chính câu SQL dựng bảng plan** — mỗi lần load bảng là một lần quét, và đó
+là một trong các nguồn timeout của F1-B3.
+
+Số có đổi một chút: SCP cũ dùng **net** (trừ dòng trả hàng), app này dùng **gross** như
+mọi cột khác trong bảng. Đo trên 90 ngày: chênh 25.386 / 1.700.863 m² = **1,5%**. Chuỗi
+quy đổi `uom_levelN` của SCP thì không đổi gì — sổ bán chỉ có đơn vị M2 và các đơn vị
+không quy được (KG/Bộ/Cái…), không có Hộp/Viên/Pallet.
+
+> Endpoint `GET /prod-lot-sizing/ma-tt?n=` bên SCP vẫn còn, dùng để tính **live** một cửa
+> sổ n bất kỳ. Nó giữ quy tắc cũ (net) nên thấp hơn cột đã lưu ~1,5% — đừng đem so trực
+> tiếp rồi kết luận cột lưu bị sai.
 
 ### Đổi sang cửa sổ 30 ngày trượt
 
@@ -262,7 +318,7 @@ dùng ở `ForecastService.upsert()` để lịch sử liền mạch:
 
 | Việc | Chi tiết |
 |---|---|
-| Cột được ghi | `fc_qty`, `actual_qty`, `ma3` |
+| Cột được ghi | `fc_qty`, `actual_qty`, `ma3`, `sales_ma_qty` |
 | Upsert | `ON CONFLICT (cn_code, sku_code, period_start) DO UPDATE` |
 | Giữ cột không truyền | `COALESCE` — chạy `--only fc` không xóa mất TT và ngược lại |
 | Lịch sử | Ghi `branch_forecast_history` kèm `changed_fields`, `reason` |
@@ -375,6 +431,7 @@ Tầng `domain` không import gì từ hai tầng kia.
 src/
   domain/                    nghiệp vụ thuần — không có SQL, không import pg
     forecast-formula.ts        weighted / perDay / FC / MA3
+    sales-ma.ts                TB trượt bán n ngày → m²/tháng (cột sales_ma_qty)
     period.ts                  tháng đích T và 3 khối B1/B2/B3
     summary.ts                 gap / WMAPE, kiểm tra tham số + interface SummaryReader
     types.ts                   kiểu dữ liệu + interface SalesReader, ForecastWriter
@@ -385,6 +442,8 @@ src/
     branch-forecast.repository.ts
                                BranchForecastRepository (upsert + lịch sử + version)
     summary.repository.ts      SummaryRepository (GROUP BY trên branch_forecast)
+    system-config.repository.ts
+                               đọc system_config của SCP (chỉ đọc, không ghi)
     migrator.ts                chạy các file trong migrations/
 
   app/                       điều phối

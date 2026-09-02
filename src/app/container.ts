@@ -4,6 +4,7 @@ import { pool } from '../infra/db.js';
 import { SalesRepository } from '../infra/sales.repository.js';
 import { BranchForecastRepository } from '../infra/branch-forecast.repository.js';
 import { SummaryRepository } from '../infra/summary.repository.js';
+import { SystemConfigRepository } from '../infra/system-config.repository.js';
 import { ForecastService } from './forecast.service.js';
 import { SummaryService } from './summary.service.js';
 import { createHttpServer } from './http.js';
@@ -17,13 +18,15 @@ import { Runner } from './runner.js';
 export function buildRunner(): Runner {
   const service = new ForecastService({
     sales: new SalesRepository(pool),
-    writer: new BranchForecastRepository(pool, CFG.chunkSize),
+    writer: new BranchForecastRepository(pool, CFG.chunkSize, CFG.sourceFc),
+    config: new SystemConfigRepository(pool),
     weights: CFG.weights,
     blockMode: CFG.blockMode,
     perDayDivisor: CFG.perDayDivisor,
     sourceFc: CFG.sourceFc,
     sourceTt: CFG.sourceTt,
     actor: CFG.actor,
+    zeroWhenDormant: CFG.fcZeroWhenDormant,
   });
   return new Runner(service);
 }
