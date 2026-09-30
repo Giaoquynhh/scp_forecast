@@ -1,4 +1,10 @@
 import 'dotenv/config';
+
+// Ép múi giờ tiến trình theo TZ_NAME. node-cron bấm giờ theo TZ_NAME, nhưng
+// planRun/isFcRunDay đọc getDate() theo giờ tiến trình — máy chủ để UTC thì 02:00
+// VN là 19:00 hôm trước: cuối tháng bị hiểu là ngày áp chót, không sinh FC.
+process.env.TZ = process.env.TZ_NAME ?? 'Asia/Ho_Chi_Minh';
+
 import { parseFcDaySpec, type BlockMode, type FcTargetMode } from './domain/period.js';
 import type { Weights } from './domain/forecast-formula.js';
 
