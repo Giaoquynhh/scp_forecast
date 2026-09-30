@@ -21,6 +21,27 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (args.accuracy) {
+    const { buildAccuracyService } = await import('./app/container.js');
+    const { printAccuracySummary } = await import('./app/accuracy.service.js');
+    const { refreshWindow } = await import('./domain/accuracy.js');
+    const { addMonths, resolveTarget, toDateOnly } = await import('./domain/period.js');
+    const { pool } = await import('./infra/db.js');
+
+    let periods: string[] | undefined;
+    if (args.from || args.to) {
+      const win = refreshWindow(new Date());
+      const from = args.from ? resolveTarget(args.from) : new Date(`${win[0]}T00:00:00Z`);
+      const to = args.to ? resolveTarget(args.to) : new Date(`${win[win.length - 1]}T00:00:00Z`);
+      periods = [];
+      for (let d = from; d <= to; d = addMonths(d, 1)) periods.push(toDateOnly(d));
+    }
+    const s = await buildAccuracyService().run({ periods, force: args.force, dryRun: args.dryRun });
+    printAccuracySummary(s, args.dryRun);
+    await pool.end();
+    return;
+  }
+
   if (args.daemon) {
     const { startDaemon } = await import('./app/scheduler.js');
     startDaemon(args.dryRun);

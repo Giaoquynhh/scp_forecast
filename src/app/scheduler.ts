@@ -3,7 +3,8 @@ import { CFG } from '../config.js';
 import {
   describeFcDaySpec, fcTargetMonth, firstOfMonth, isFcRunDay, toDateOnly,
 } from '../domain/period.js';
-import { buildRunner } from './container.js';
+import { buildAccuracyService, buildRunner } from './container.js';
+import { printAccuracySummary } from './accuracy.service.js';
 import { stamp } from './runner.js';
 
 /**
@@ -105,12 +106,14 @@ export function startDaemon(dryRun = false): void {
   }
 
   const runner = buildRunner();
+  const accuracy = buildAccuracyService();
 
   console.log('─'.repeat(64));
   console.log(`scp-forecast daemon · ${stamp()}`);
   console.log(`Lịch        ${CFG.cronSchedule}  (${CFG.timezone})`);
   console.log(`TT          mỗi lượt, ${CFG.ttMonths} tháng gần nhất`);
   console.log('TB trượt    mỗi lượt, cửa sổ n ngày theo system_config planning.ma_months');
+  console.log('Accuracy    mỗi lượt, sau TT/FC — dựng lại forecast_accuracy_* của tháng cũ');
   console.log(
     `FC + MA3    ${CFG.fcRecomputeDaily
       ? 'mỗi lượt'
@@ -160,6 +163,13 @@ export function startDaemon(dryRun = false): void {
       } catch (err) {
         // Nuốt lỗi để daemon sống tiếp; lượt sau thử lại.
         console.error(`[${stamp()}] LỖI trong lượt chạy:`, err instanceof Error ? err.message : err);
+      }
+      // Accuracy chạy SAU và TÁCH khỏi lượt chính: lỗi ở đây không được làm mất TT/FC
+      // vừa ghi. Mùng 1 đây là lúc tháng trước được chấm (closed đổi ⇒ tính lại).
+      try {
+        printAccuracySummary(await accuracy.run({ now, dryRun }), dryRun);
+      } catch (err) {
+        console.error(`[${stamp()}] LỖI khi dựng accuracy:`, err instanceof Error ? err.message : err);
       } finally {
         running = false;
       }

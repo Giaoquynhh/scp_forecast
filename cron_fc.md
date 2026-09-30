@@ -54,6 +54,20 @@ npm test            # phải pass hết (hiện 34/34 ở tests/schedule.test.ts
 
 Cần Node 20 trở lên.
 
+### 3.2b. Tạo bảng accuracy và tính bù (một lần, khi lên bản có `003_forecast_accuracy.sql`)
+
+```bash
+npm run migrate                              # tạo forecast_accuracy_sku / forecast_accuracy_cn
+npm run acc -- --from 2026-01 --force        # tính bù từ 2026-01 tới tháng sau
+npm run acc                                  # chạy lại: phải in "không tháng nào cần tính lại"
+```
+
+Sau đó daemon tự dựng lại accuracy sau mỗi lượt 02:00. Mùng 1 là lúc tháng trước được chấm %.
+Backend SCP đọc 2 bảng này. Nếu bảng thiếu tháng, BE tự tính trực tiếp như cũ và ghi cảnh báo
+`forecast_accuracy_cn thiếu tháng` vào log.
+
+**Thứ tự deploy:** migrate → tính bù → khởi động lại daemon forecast → deploy backend SCP.
+
 ### 3.3. Kiểm `.env`
 
 Các dòng lịch chạy **phải đúng như sau**:

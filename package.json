@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts",
     "migrate": "tsx src/index.ts --migrate",
     "cron": "tsx src/index.ts --daemon",
+    "acc": "tsx src/index.ts --accuracy",
     "serve": "tsx src/index.ts --serve",
     "fc": "tsx src/index.ts --only fc",
     "tt": "tsx src/index.ts --only tt",

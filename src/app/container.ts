@@ -5,6 +5,8 @@ import { SalesRepository } from '../infra/sales.repository.js';
 import { BranchForecastRepository } from '../infra/branch-forecast.repository.js';
 import { SummaryRepository } from '../infra/summary.repository.js';
 import { SystemConfigRepository } from '../infra/system-config.repository.js';
+import { AccuracyRepository } from '../infra/accuracy.repository.js';
+import { AccuracyService } from './accuracy.service.js';
 import { ForecastService } from './forecast.service.js';
 import { SummaryService } from './summary.service.js';
 import { createHttpServer } from './http.js';
@@ -29,6 +31,11 @@ export function buildRunner(): Runner {
     zeroWhenDormant: CFG.fcZeroWhenDormant,
   });
   return new Runner(service);
+}
+
+/** Dựng bảng forecast_accuracy_* (sau mỗi lượt cron, hoặc chạy tay --accuracy). */
+export function buildAccuracyService(): AccuracyService {
+  return new AccuracyService(new AccuracyRepository(pool));
 }
 
 /** Server đọc-thuần cho GET /demand/summary. Dùng chung pool với lượt tính. */

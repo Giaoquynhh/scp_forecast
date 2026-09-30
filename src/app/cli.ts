@@ -13,13 +13,21 @@ export interface CliArgs {
   /** true = chạy HTTP server đọc-thuần thay vì tính một lượt. */
   serve: boolean;
   port: number;
+  /** true = chỉ dựng bảng forecast_accuracy_*, không tính TT/FC. */
+  accuracy: boolean;
+  /** --accuracy: tháng đầu (YYYY-MM). Bỏ trống = 13 tháng gần nhất + tháng sau. */
+  from?: string;
+  /** --accuracy: tháng cuối (YYYY-MM). Mặc định tháng sau. */
+  to?: string;
+  /** --accuracy: dựng lại cả tháng không cũ. */
+  force: boolean;
 }
 
 /** Phân tích tham số dòng lệnh. Hàm thuần — test được, không đụng process.argv. */
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     only: 'both', dryRun: false, daemon: false, migrate: false, ttMonths: CFG.ttMonths,
-    serve: false, port: CFG.httpPort,
+    serve: false, port: CFG.httpPort, accuracy: false, force: false,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -46,6 +54,12 @@ export function parseArgs(argv: string[]): CliArgs {
     else if (token === '--daemon') args.daemon = true;
     else if (token === '--serve') args.serve = true;
     else if (token === '--migrate') args.migrate = true;
+    else if (token === '--accuracy') args.accuracy = true;
+    else if (token === '--force') args.force = true;
+    else if (token === '--from') args.from = value();
+    else if (token.startsWith('--from=')) args.from = inline('--from=');
+    else if (token === '--to') args.to = value();
+    else if (token.startsWith('--to=')) args.to = inline('--to=');
     else if (token === '--help' || token === '-h') { printUsage(); process.exit(0); }
     else throw new Error(`Tham số lạ: ${token}`);
   }
@@ -64,6 +78,12 @@ export function parseArgs(argv: string[]): CliArgs {
   }
   if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65535) {
     throw new Error('--port phải là số nguyên trong khoảng 1..65535');
+  }
+  for (const [flag, v] of [['--from', args.from], ['--to', args.to]] as const) {
+    if (v !== undefined && !/^\d{4}-\d{2}$/.test(v)) throw new Error(`${flag} phải là YYYY-MM (nhận được: ${v})`);
+  }
+  if ((args.from || args.to || args.force) && !args.accuracy) {
+    throw new Error('--from / --to / --force chỉ dùng cùng --accuracy');
   }
   if (args.serve && args.daemon) {
     throw new Error('--serve và --daemon loại trừ nhau: một tiến trình chỉ làm một việc');
@@ -96,6 +116,11 @@ scp-forecast — tính TT, FC và MA3 rồi ghi vào branch_forecast
   npm start -- --dry-run          tính và in kết quả, KHÔNG ghi DB
   npm start -- --tt-months 2      số tháng gần nhất được tính lại TT
   npm start -- --limit 20         chỉ ghi N dòng đầu (để thử)
+
+  npm run acc                     dựng bảng forecast_accuracy_sku / _cn cho các tháng CŨ
+                                  (13 tháng gần nhất + tháng sau). Cron đã tự chạy sau mỗi lượt.
+  npm run acc -- --from 2026-01 --force   tính bù / dựng lại toàn bộ từ tháng chỉ định
+  npm run acc -- --dry-run        chỉ liệt kê tháng sẽ tính lại
 
   npm run serve                   HTTP đọc-thuần trên ${CFG.httpHost}:${CFG.httpPort}
   npm run serve -- --port 4000    đổi cổng
